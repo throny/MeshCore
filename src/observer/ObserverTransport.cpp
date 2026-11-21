@@ -507,7 +507,10 @@ void Transport::service() {
     __atomic_store_n(&complete_record_sent_, record_complete, __ATOMIC_RELEASE);
     delivery_.fragmentSent(record_complete);
   } else {
-    log_queue_->restartHead();
+    // This <=20-byte value fits one ATT notification at the minimum MTU.
+    // A rejected notify accepted no fragment: retain the unsent cursor rather
+    // than replaying its accepted prefix. Disconnect and ACK timeout still
+    // restart the whole record; consume remains success-only.
     ++failed_notifications_;
     delivery_.fragmentFailed();
     __atomic_store_n(&complete_record_sent_, false, __ATOMIC_RELEASE);
