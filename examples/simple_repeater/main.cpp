@@ -134,10 +134,14 @@ void loop() {
   if (observer::transport.takeCommand(observer_command, sizeof(observer_command))) {
     char reply[160] = {};
     the_mesh.handleObserverCommand(observer_command, reply);
+#if defined(SENSECAP_OBSERVER_COC_CHANNELS)
+    observer::transport.replyCoC(reinterpret_cast<const uint8_t*>(reply), strlen(reply));
+#else
     if (reply[0]) {
       observer::logOutput().print(reply);
       observer::logOutput().print("\r\n");
     }
+#endif
   }
 #endif
   // Handle Serial CLI

@@ -18,6 +18,10 @@ constexpr uint8_t kLogUuid[] = {0x1b, 0x5f, 0x6f, 0x03, 0x6b, 0x56, 0x48, 0x5e, 
 constexpr uint8_t kCommandUuid[] = {0x1b, 0x5f, 0x6f, 0x04, 0x6b, 0x56, 0x48, 0x5e, 0xa3, 0x50, 0x61, 0x3c, 0x4a, 0x5d, 0xc2, 0x10};
 constexpr uint8_t kAckUuid[] = {0x1b, 0x5f, 0x6f, 0x05, 0x6b, 0x56, 0x48, 0x5e, 0xa3, 0x50, 0x61, 0x3c, 0x4a, 0x5d, 0xc2, 0x10};
 constexpr uint8_t kStatsUuid[] = {0x1b, 0x5f, 0x6f, 0x06, 0x6b, 0x56, 0x48, 0x5e, 0xa3, 0x50, 0x61, 0x3c, 0x4a, 0x5d, 0xc2, 0x10};
+#if defined(SENSECAP_OBSERVER_COC_CHANNELS)
+constexpr uint8_t kCocDiscoveryUuid[] = {0x1b, 0x5f, 0x6f, 0x07, 0x6b, 0x56, 0x48, 0x5e, 0xa3, 0x50, 0x61, 0x3c, 0x4a, 0x5d, 0xc2, 0x10};
+constexpr uint16_t kCocDescriptorBytes = 8;
+#endif
 constexpr uint16_t kAdvertisingInterval = 1600;  // 1 second
 constexpr uint16_t kNotificationBytes = 244;
 }
@@ -30,7 +34,11 @@ Transport::Transport(bool enabled)
     : enabled_(enabled), policy_(enabled),
       service_(BLEUuid(kServiceUuid)), log_characteristic_(BLEUuid(kLogUuid)),
       command_characteristic_(BLEUuid(kCommandUuid)), ack_characteristic_(BLEUuid(kAckUuid)),
-      stats_characteristic_(BLEUuid(kStatsUuid)) {}
+      stats_characteristic_(BLEUuid(kStatsUuid))
+#if defined(SENSECAP_OBSERVER_COC_CHANNELS)
+      , discovery_characteristic_(BLEUuid(kCocDiscoveryUuid))
+#endif
+      {}
 
 void Transport::attachPreferences(bool enabled, const PeerIdentity& peer, bool has_peer) {
   enabled_ = enabled;
@@ -50,11 +58,19 @@ bool Transport::begin(const char* name, bool enabled) {
   policy_.setEnabled(true);
   if (initialized_) return true;
   instance_ = this;
+#if defined(SENSECAP_OBSERVER_COC_CHANNELS)
+  coc_runtime::setObserverCallback(onCoCBLEEvent);
+#else
   Bluefruit.configPrphBandwidth(BANDWIDTH_MAX);
+#endif
   // Suppress normal Bluetooth indication only; bootloader LEDs are independent.
   Bluefruit.autoConnLed(false);
   digitalWrite(LED_BLUE, 1 - LED_STATE_ON);
+#if defined(SENSECAP_OBSERVER_COC_CHANNELS)
+  if (!coc_runtime::beginBluefruitOnce()) return failInitialization();
+#else
   if (!Bluefruit.begin(1, 0)) return failInitialization();
+#endif
   core_ready_ = true;
   Bluefruit.setTxPower(0);
   Bluefruit.setName(name);
@@ -66,6 +82,13 @@ bool Transport::begin(const char* name, bool enabled) {
   Bluefruit.Periph.setDisconnectCallback(onDisconnect);
   Bluefruit.Security.setSecuredCallback(onSecured);
   if (service_.begin() != NRF_SUCCESS) return failInitialization();
+#if defined(SENSECAP_OBSERVER_COC_CHANNELS)
+  discovery_characteristic_.setProperties(CHR_PROPS_READ);
+  discovery_characteristic_.setPermission(SECMODE_ENC_WITH_MITM, SECMODE_NO_ACCESS);
+  discovery_characteristic_.setMaxLen(kCocDescriptorBytes);
+  discovery_characteristic_.setReadAuthorizeCallback(onDiscovery);
+  if (discovery_characteristic_.begin() != NRF_SUCCESS) return failInitialization();
+#else
   log_characteristic_.setProperties(CHR_PROPS_NOTIFY);
   log_characteristic_.setPermission(SECMODE_ENC_WITH_MITM, SECMODE_NO_ACCESS);
   log_characteristic_.setMaxLen(kNotificationBytes);
@@ -85,6 +108,7 @@ bool Transport::begin(const char* name, bool enabled) {
   stats_characteristic_.setMaxLen(128);
   stats_characteristic_.setReadAuthorizeCallback(onStats);
   if (stats_characteristic_.begin() != NRF_SUCCESS) return failInitialization();
+#endif
   Bluefruit.Advertising.addFlags(BLE_GAP_ADV_FLAGS_LE_ONLY_GENERAL_DISC_MODE);
   Bluefruit.Advertising.addService(service_);
   Bluefruit.ScanResponse.addName();
@@ -136,6 +160,14 @@ bool Transport::authorizedAndSecured(uint16_t handle) const {
   const bool allowed = policy_.authorizes(true, identity, millis());
   if (!allowed && !policy_.enrollmentOpen(millis())) connection->disconnect();
   return allowed;
+}
+
+bool Transport::authorizeCoC(uint16_t handle) const {
+  return handle == connectionHandle() && authorizedAndSecured(handle);
+}
+
+bool Transport::authorizeCoCLink(uint16_t handle) {
+  return transport.authorizeCoC(handle);
 }
 
 void Transport::setConnectionHandle(uint16_t handle) {
@@ -289,6 +321,60 @@ void Transport::onStats(uint16_t handle, BLECharacteristic*, ble_gatts_evt_read_
   sd_ble_gatts_rw_authorize_reply(handle, &reply);
 }
 
+#if defined(SENSECAP_OBSERVER_COC_CHANNELS)
+void Transport::onCoCBLEEvent(ble_evt_t* event) {
+  if (instance_ && event) instance_->coc_server_.event(*event);
+}
+
+void Transport::onDiscovery(uint16_t handle, BLECharacteristic*, ble_gatts_evt_read_t* request) {
+  if (!instance_ || !request || !instance_->authorizeCoC(handle)) return;
+  uint8_t descriptor[kCocDescriptorBytes] = {
+      1, static_cast<uint8_t>(SENSECAP_OBSERVER_COC_CHANNELS),
+      static_cast<uint8_t>(coc::Server::kDataPsm), static_cast<uint8_t>(coc::Server::kDataPsm >> 8),
+      static_cast<uint8_t>(SENSECAP_OBSERVER_COC_CHANNELS == 2 ? coc::Server::kControlPsm : 0),
+      static_cast<uint8_t>(SENSECAP_OBSERVER_COC_CHANNELS == 2 ? coc::Server::kControlPsm >> 8 : 0),
+      static_cast<uint8_t>(coc::kSduBytes), static_cast<uint8_t>(coc::kSduBytes >> 8)};
+  if (request->offset > sizeof(descriptor)) return;
+  ble_gatts_rw_authorize_reply_params_t reply{};
+  reply.type = BLE_GATTS_AUTHORIZE_TYPE_READ;
+  reply.params.read.gatt_status = BLE_GATT_STATUS_SUCCESS;
+  reply.params.read.update = 1;
+  reply.params.read.len = sizeof(descriptor) - request->offset;
+  reply.params.read.offset = request->offset;
+  reply.params.read.p_data = descriptor + request->offset;
+  (void)sd_ble_gatts_rw_authorize_reply(handle, &reply);
+}
+
+size_t Transport::cocStats(char* bytes, size_t capacity) {
+  if (!instance_ || !bytes || !capacity) return 0;
+  return formatStats(instance_->stats_snapshot_.read(), bytes, capacity);
+}
+
+void Transport::cocTimerCallback(TimerHandle_t) {}
+
+void Transport::cocWake() {
+  if (!instance_ || !instance_->coc_timer_initialized_) return;
+  instance_->coc_timer_.setPeriod(1);
+  instance_->coc_timer_.start();
+}
+
+void Transport::cocSchedule(uint32_t delay_ms, bool enabled) {
+  if (!instance_) return;
+  Transport& t = *instance_;
+  if (!t.coc_timer_initialized_) {
+    t.coc_timer_.begin(1, cocTimerCallback, &t, false);
+    t.coc_timer_initialized_ = t.coc_timer_.getHandle() != nullptr;
+  }
+  if (!t.coc_timer_initialized_) return;
+  if (!enabled) {
+    t.coc_timer_.stop();
+    return;
+  }
+  t.coc_timer_.setPeriod(delay_ms ? delay_ms : 1);
+  t.coc_timer_.start();
+}
+#endif
+
 bool Transport::onPasskey(uint16_t handle, uint8_t const passkey[6], bool match_request) {
   if (!instance_ || match_request ||
       __atomic_load_n(&instance_->passkey_allowed_handle_, __ATOMIC_ACQUIRE) != handle) return false;
@@ -303,8 +389,18 @@ void Transport::onPairComplete(uint16_t handle, uint8_t auth_status) {
 }
 
 bool Transport::takeCommand(char* destination, size_t capacity) {
+#if defined(SENSECAP_OBSERVER_COC_CHANNELS)
+  return coc_server_.takeCommand(destination, capacity);
+#else
   return command_ingress_.takeCommand(destination, capacity);
+#endif
 }
+
+#if defined(SENSECAP_OBSERVER_COC_CHANNELS)
+bool Transport::replyCoC(const uint8_t* bytes, size_t length) {
+  return coc_server_.reply(bytes, length, static_cast<uint32_t>(millis()));
+}
+#endif
 
 size_t Transport::writeLog(const uint8_t* bytes, size_t length) {
   if (!enabled_) return length;
@@ -323,6 +419,9 @@ size_t Transport::writeLog(const uint8_t* bytes, size_t length) {
         unavailable_line_bytes_ = 0;
       }
     } else line_buffer_->write(bytes[index]);
+#if defined(SENSECAP_OBSERVER_COC_CHANNELS)
+    if (bytes[index] == '\n') cocWake();
+#endif
   }
   return length;
 }
@@ -484,7 +583,22 @@ void Transport::service() {
   if (log_queue_ && log_queue_->sequenceExhausted() && refreshNonce(true)) {
     log_queue_->setBootNonce(boot_nonce_);
   }
-  if (policy_.enrollmentOpen(millis())) return;
+  if (policy_.enrollmentOpen(millis())) {
+#if defined(SENSECAP_OBSERVER_COC_CHANNELS)
+    coc_server_.close();
+    coc_server_.service(log_queue_, boot_nonce_, static_cast<uint32_t>(millis()));
+#endif
+    return;
+  }
+#if defined(SENSECAP_OBSERVER_COC_CHANNELS)
+  if (!enabled_) {
+    coc_server_.close();
+    coc_server_.service(static_cast<Queue*>(nullptr), 0, static_cast<uint32_t>(millis()));
+    return;
+  }
+  coc_server_.service(log_queue_, boot_nonce_, static_cast<uint32_t>(millis()));
+  return;
+#else
   if (!ack_length_) ack_ingress_.take(ack_, sizeof(ack_), ack_length_);
   if (ack_length_) { processAck(ack_, ack_length_); ack_length_ = 0; }
   const uint16_t handle = connectionHandle();
@@ -524,6 +638,7 @@ void Transport::service() {
     delivery_.fragmentFailed();
     __atomic_store_n(&complete_record_sent_, false, __ATOMIC_RELEASE);
   }
+#endif
 }
 
 size_t LogMirror::write(uint8_t byte) { return transport.writeLog(&byte, 1); }

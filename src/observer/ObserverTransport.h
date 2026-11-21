@@ -12,6 +12,10 @@
 #include "ObserverConnectionAdmission.h"
 #include "ObserverDelivery.h"
 #include "ObserverStatsSnapshot.h"
+#if defined(SENSECAP_OBSERVER_COC_CHANNELS)
+#include "ObserverBleRuntime.h"
+#include "coc/NordicPort.h"
+#endif
 
 #if defined(SENSECAP_OBSERVER_TRANSPORT)
 #if !defined(OBSERVER_TRANSPORT_PLATFORM_TEST)
@@ -40,6 +44,11 @@ class Transport {
   bool initialized() const { return initialized_; }
   void service();
   bool takeCommand(char* destination, size_t capacity);
+  bool authorizeCoC(uint16_t connection_handle) const;
+  static bool authorizeCoCLink(uint16_t connection_handle);
+#if defined(SENSECAP_OBSERVER_COC_CHANNELS)
+  bool replyCoC(const uint8_t* bytes, size_t length);
+#endif
   bool enable(bool enabled);
   bool enrollmentOpen() const { return policy_.enrollmentOpen(millis()); }
   bool revokePeer();
@@ -67,6 +76,9 @@ class Transport {
   BLECharacteristic command_characteristic_;
   BLECharacteristic ack_characteristic_;
   BLECharacteristic stats_characteristic_;
+#if defined(SENSECAP_OBSERVER_COC_CHANNELS)
+  BLECharacteristic discovery_characteristic_;
+#endif
   using Queue = RecordQueue<kLogQueueBytes, kLogQueueRecords>;
   Queue* log_queue_ = nullptr;
   LineBuffer<544, kLogQueueBytes, Queue>* line_buffer_ = nullptr;
@@ -111,6 +123,13 @@ class Transport {
   bool (*save_peer_)(bool, const PeerIdentity&) = nullptr;
   uint16_t enrollment_handle_ = BLE_CONN_HANDLE_INVALID;
   StatsSnapshot stats_snapshot_;
+#if defined(SENSECAP_OBSERVER_COC_CHANNELS)
+  coc::NordicPort coc_port_{&Transport::authorizeCoCLink, &Transport::cocStats,
+                            &Transport::cocWake, &Transport::cocSchedule};
+  coc::Server coc_server_{coc_port_, SENSECAP_OBSERVER_COC_CHANNELS};
+  SoftwareTimer coc_timer_;
+  bool coc_timer_initialized_ = false;
+#endif
 
   static void onConnect(uint16_t connection_handle);
   static void onDisconnect(uint16_t connection_handle, uint8_t reason);
@@ -120,6 +139,15 @@ class Transport {
   static void onStats(uint16_t connection_handle, BLECharacteristic* characteristic, ble_gatts_evt_read_t* request);
   static bool onPasskey(uint16_t connection_handle, uint8_t const passkey[6], bool match_request);
   static void onPairComplete(uint16_t connection_handle, uint8_t auth_status);
+#if defined(SENSECAP_OBSERVER_COC_CHANNELS)
+  static void onCoCBLEEvent(ble_evt_t* event);
+  static void onDiscovery(uint16_t connection_handle, BLECharacteristic* characteristic,
+                          ble_gatts_evt_read_t* request);
+  static size_t cocStats(char* bytes, size_t capacity);
+  static void cocWake();
+  static void cocSchedule(uint32_t delay_ms, bool enabled);
+  static void cocTimerCallback(TimerHandle_t timer);
+#endif
   bool authorizedAndSecured(uint16_t connection_handle) const;
   bool refreshNonce(bool rotate = false);
   bool persistPeer(bool has_peer, const PeerIdentity& peer);

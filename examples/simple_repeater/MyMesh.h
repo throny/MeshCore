@@ -74,7 +74,11 @@ struct NeighbourInfo {
 #endif
 
 #ifndef FIRMWARE_VERSION
-  #define FIRMWARE_VERSION   "v1.18.0"
+  #if defined(SENSECAP_OBSERVER_COC_CHANNELS) && SENSECAP_OBSERVER_COC_CHANNELS > 0
+    #define FIRMWARE_VERSION   "v1.18.0-coc"
+  #else
+    #define FIRMWARE_VERSION   "v1.18.0-obs544"
+  #endif
 #endif
 
 #define FIRMWARE_ROLE "repeater"
