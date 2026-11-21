@@ -3,6 +3,7 @@
 #include <utility/bonding.h>
 #endif
 #include <new>
+#include <algorithm>
 #include <stdio.h>
 
 #include "ObserverPreference.h"
@@ -18,7 +19,7 @@ constexpr uint8_t kCommandUuid[] = {0x1b, 0x5f, 0x6f, 0x04, 0x6b, 0x56, 0x48, 0x
 constexpr uint8_t kAckUuid[] = {0x1b, 0x5f, 0x6f, 0x05, 0x6b, 0x56, 0x48, 0x5e, 0xa3, 0x50, 0x61, 0x3c, 0x4a, 0x5d, 0xc2, 0x10};
 constexpr uint8_t kStatsUuid[] = {0x1b, 0x5f, 0x6f, 0x06, 0x6b, 0x56, 0x48, 0x5e, 0xa3, 0x50, 0x61, 0x3c, 0x4a, 0x5d, 0xc2, 0x10};
 constexpr uint16_t kAdvertisingInterval = 1600;  // 1 second
-constexpr uint16_t kNotificationBytes = 20;
+constexpr uint16_t kNotificationBytes = 244;
 }
 
 Transport* Transport::instance_ = nullptr;
@@ -489,6 +490,11 @@ void Transport::service() {
   const uint16_t handle = connectionHandle();
   if (!enabled_ || !nonce_ready_ || !log_queue_ || !__atomic_load_n(&secured_, __ATOMIC_ACQUIRE) || !authorizedAndSecured(handle) ||
       !log_characteristic_.notifyEnabled(handle) || log_queue_->empty()) return;
+  BLEConnection* connection = Bluefruit.Connection(handle);
+  if (!connection) return;
+  const uint16_t mtu = connection->getMtu();
+  if (mtu < 23) return;
+  const size_t notification_bytes = std::min<size_t>(kNotificationBytes, mtu - 3);
   const unsigned long now = millis();
   if (!delivery_.maySend(now)) return;
   if (__atomic_load_n(&complete_record_sent_, __ATOMIC_ACQUIRE)) {
@@ -497,7 +503,7 @@ void Transport::service() {
     __atomic_store_n(&complete_record_sent_, false, __ATOMIC_RELEASE);
   }
   RecordFragment fragment;
-  if (!log_queue_->peek(fragment, kNotificationBytes - kFrameHeaderBytes)) return;
+  if (!log_queue_->peek(fragment, notification_bytes - kFrameHeaderBytes)) return;
   uint8_t notification[kNotificationBytes];
   const size_t encoded = encodeFrame(fragment.boot_nonce, fragment.sequence, fragment.total_length,
                                      fragment.offset, fragment.bytes, fragment.length,
