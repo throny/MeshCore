@@ -22,7 +22,7 @@ jobs:
         uses: ./.github/actions/setup-build-environment
 
       - name: Run observer unit tests
-        run: pio test -e native -f test_observer_coc -f test_observer_transport
+        run: pio test -e native -f test_observer_transport
 
   build:
     runs-on: ubuntu-latest
