@@ -291,6 +291,16 @@ struct TransportTestAccess {
   static StatsValues stats(Transport& t) { t.updateStatsSnapshot(); return t.stats_snapshot_.read(); }
   static const void* queue(Transport& t) { return t.log_queue_; }
   static void dispose(Transport& t) { t.releaseQueue(); }
+  static size_t queueSize(Transport& t) { return t.log_queue_ ? t.log_queue_->size() : 0; }
+  static uint16_t headTotal(Transport& t) {
+    RecordFragment fragment{};
+    return (t.log_queue_ && t.log_queue_->peek(fragment, kMaximumRecordBytes)) ? fragment.total_length : 0;
+  }
+  static bool acknowledgeHead(Transport& t) {
+    RecordFragment fragment{};
+    return t.log_queue_ && t.log_queue_->peek(fragment, kMaximumRecordBytes) &&
+           t.log_queue_->acknowledge(fragment.boot_nonce, fragment.sequence);
+  }
 };
 }
 
@@ -1830,6 +1840,86 @@ TEST(ObserverPolicy, EnrollmentIsRejectedByDefaultAndSecondPeerCannotReplacePinn
   policy.closeEnrollment();
   EXPECT_TRUE(policy.authorizes(true, intended, 302));
   EXPECT_FALSE(policy.authorizes(true, {1, {6, 5, 4, 3, 2, 1}}, 302));
+}
+
+// Coordinated 544-byte record ceiling. The live P1-Pro trace produced RAW
+// records up to 541 bytes (terminator included) and truncated 51 real lines at
+// the old 256-byte capture limit; 544 bytes is the smallest coordinated cap
+// with a 244-byte notification MTU (228-byte payloads). These tests bind the
+// production constants only: the protocol ceiling, the production queue shape,
+// the transport LineBuffer guard, and the encode limit mirrored by the host's
+// MAX_RECORD_BYTES. No test-only template capacity may fake the guard.
+
+TEST(ObserverProtocolRecordLimit, EncodeFrameAdmitsObservedMaxRecordAndRejectsOneByteOverCeiling) {
+  EXPECT_EQ(observer::kMaximumRecordBytes, 544U);
+  const uint8_t payload[] = "RAW: AABB";
+  uint8_t encoded[observer::kFrameHeaderBytes + sizeof(payload)] = {};
+  EXPECT_EQ(observer::encodeFrame(7, 1, 541, 0, payload, sizeof(payload) - 1, encoded, sizeof(encoded)),
+            observer::kFrameHeaderBytes + sizeof(payload) - 1);
+  EXPECT_EQ(observer::encodeFrame(7, 1, 544, 0, payload, sizeof(payload) - 1, encoded, sizeof(encoded)),
+            observer::kFrameHeaderBytes + sizeof(payload) - 1);
+  EXPECT_EQ(observer::encodeFrame(7, 1, 545, 0, payload, sizeof(payload) - 1, encoded, sizeof(encoded)), 0U);
+}
+
+TEST(ObserverRecordQueue, ProductionQueueShapeHoldsObservedMaxRawAndNewCeilingRecords) {
+  observer::RecordQueue<2048, 16> queue(true, 7);  // production Transport queue shape
+  const std::string raw_541 = std::string(540, 'A') + '\n';
+  const std::string raw_544 = std::string(543, 'B') + '\n';
+  ASSERT_EQ(raw_541.size(), 541U);
+  ASSERT_EQ(raw_544.size(), 544U);
+  ASSERT_TRUE(queue.enqueue(reinterpret_cast<const uint8_t*>(raw_541.data()), raw_541.size()));
+  ASSERT_TRUE(queue.enqueue(reinterpret_cast<const uint8_t*>(raw_544.data()), raw_544.size()));
+  EXPECT_EQ(queue.size(), 2U);
+  EXPECT_EQ(queue.truncatedRecords(), 0U);
+  EXPECT_EQ(queue.droppedRecords(), 0U);
+  observer::RecordFragment head{};
+  ASSERT_TRUE(queue.peek(head, observer::kMaximumRecordBytes));
+  EXPECT_EQ(head.total_length, 541U);
+  EXPECT_EQ(head.sequence, 1U);
+  ASSERT_TRUE(queue.acknowledge(7, 1));
+  ASSERT_TRUE(queue.peek(head, observer::kMaximumRecordBytes));
+  EXPECT_EQ(head.total_length, 544U);
+}
+
+TEST(ObserverLineBuffer, ProductionRecordLimitCommitsObservedMaxLinesAndDropsWholeOverlongLineAtFullLength) {
+  observer::RecordQueue<2048, 16> queue(true, 7);  // production Transport queue shape
+  observer::LineBuffer<observer::kMaximumRecordBytes, 2048, decltype(queue)> buffer(queue);
+  const std::string accepted_541 = std::string(540, 'a') + '\n';
+  const std::string accepted_544 = std::string(543, 'b') + '\n';
+  const std::string dropped_545 = std::string(544, 'c') + '\n';
+  for (const std::string& line : {accepted_541, accepted_544, dropped_545})
+    for (const uint8_t byte : line) buffer.write(byte);
+  EXPECT_EQ(queue.size(), 2U);
+  EXPECT_EQ(queue.truncatedRecords(), 1U);
+  EXPECT_EQ(queue.truncatedBytes(), 545U);  // whole line including its newline
+  EXPECT_EQ(queue.droppedRecords(), 1U);    // the truncation is the only recorded loss
+  EXPECT_EQ(queue.droppedBytes(), 545U);
+  EXPECT_EQ(queue.evictedRecords(), 0U);
+  observer::RecordFragment head{};
+  ASSERT_TRUE(queue.peek(head, observer::kMaximumRecordBytes));
+  EXPECT_EQ(head.total_length, 541U);
+  ASSERT_TRUE(queue.acknowledge(7, 1));
+  ASSERT_TRUE(queue.peek(head, observer::kMaximumRecordBytes));
+  EXPECT_EQ(head.total_length, 544U);
+}
+
+TEST_F(ObserverProductionLifecycle, ProductionTransportCapturesObservedMaxRawAndDropsWholeOverlongLine) {
+  ready(true); connect();
+  const std::string accepted_541 = std::string(540, 'a') + '\n';
+  const std::string accepted_544 = std::string(543, 'b') + '\n';
+  const std::string dropped_545 = std::string(544, 'c') + '\n';
+  t.writeLog(reinterpret_cast<const uint8_t*>(accepted_541.data()), accepted_541.size());
+  t.writeLog(reinterpret_cast<const uint8_t*>(accepted_544.data()), accepted_544.size());
+  t.writeLog(reinterpret_cast<const uint8_t*>(dropped_545.data()), dropped_545.size());
+  EXPECT_EQ(observer::TransportTestAccess::queueSize(t), 2U);
+  const auto stats = observer::TransportTestAccess::stats(t);
+  EXPECT_EQ(stats.truncated_records, 1U);
+  EXPECT_EQ(stats.truncated_bytes, 545U);
+  EXPECT_EQ(stats.evicted_records, 0U);
+  EXPECT_EQ(stats.unavailable_records, 0U);
+  EXPECT_EQ(observer::TransportTestAccess::headTotal(t), 541U);
+  EXPECT_TRUE(observer::TransportTestAccess::acknowledgeHead(t));
+  EXPECT_EQ(observer::TransportTestAccess::headTotal(t), 544U);
 }
 
 }  // namespace

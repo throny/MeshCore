@@ -8,7 +8,7 @@
 namespace observer {
 
 constexpr size_t kFrameHeaderBytes = 16;
-constexpr size_t kMaximumRecordBytes = 256;
+constexpr size_t kMaximumRecordBytes = 544;
 constexpr size_t kMaximumAckBytes = 95;
 
 struct Ack {

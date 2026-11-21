@@ -69,7 +69,7 @@ class Transport {
   BLECharacteristic stats_characteristic_;
   using Queue = RecordQueue<kLogQueueBytes, kLogQueueRecords>;
   Queue* log_queue_ = nullptr;
-  LineBuffer<256, kLogQueueBytes, Queue>* line_buffer_ = nullptr;
+  LineBuffer<544, kLogQueueBytes, Queue>* line_buffer_ = nullptr;
   CommandIngress command_ingress_;
   AckIngress ack_ingress_;
   CallbackEvents callback_events_;

@@ -555,7 +555,7 @@ bool Transport::allocateQueue() {
   if (!log_queue_) {
     log_queue_ = new (std::nothrow) Queue(true, boot_nonce_, sequence_state_);
     if (!log_queue_) return false;
-    line_buffer_ = new (std::nothrow) LineBuffer<256, kLogQueueBytes, Queue>(*log_queue_);
+    line_buffer_ = new (std::nothrow) LineBuffer<544, kLogQueueBytes, Queue>(*log_queue_);
     if (!line_buffer_) { delete log_queue_; log_queue_ = nullptr; return false; }
   }
   return true;

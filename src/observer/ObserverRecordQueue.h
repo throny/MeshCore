@@ -211,7 +211,7 @@ class RecordQueue {
   size_t record_head_ = 0;
   size_t record_tail_ = 0;
   size_t record_count_ = 0;
-  static constexpr size_t kMaxRecordLength = 256;
+  static constexpr size_t kMaxRecordLength = 544;
   uint64_t boot_nonce_ = 0;
   uint32_t next_sequence_ = 1;
   QueueSequenceState* sequence_ = nullptr;
