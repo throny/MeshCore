@@ -2097,6 +2097,159 @@ TEST(ObserverNodePrefs, BootStartupDoesNotInitializeMissingUnknownOrDisabledPref
 
 #endif
 
+// ---- Prefs written by firmware older than the observer_p_* key rename ----
+// That firmware wrote observer_peer_on / observer_peer_type / observer_peer_addr and was
+// built with CONFIG_MAX_KEYLEN=19. The format differs from today's only in those three names.
+namespace {
+std::string replaceAll(std::string text, const std::string& from, const std::string& to) {
+  for (size_t at = 0; (at = text.find(from, at)) != std::string::npos; at += to.size()) {
+    text.replace(at, from.size(), to);
+  }
+  return text;
+}
+
+std::string toOldFormat(std::string current) {
+  current = replaceAll(current, "observer_p_on:", "observer_peer_on:");
+  current = replaceAll(current, "observer_p_type:", "observer_peer_type:");
+  return replaceAll(current, "observer_p_addr:", "observer_peer_addr:");
+}
+
+const uint8_t kLegacyAddress[] = {0xA1, 0xB2, 0xC3, 0xD4, 0xE5, 0xF6};
+
+// What the previous firmware stored for an enrolled host, plus upstream settings.
+std::string previousFirmwareBlob() {
+  observer::ObserverNodePrefs prefs;
+  prefs.observer_version_ = observer::ObserverNodePrefs::kObserverVersion;
+  prefs.observer_enabled = 1;
+  prefs.observer_peer_present = 1;
+  prefs.observer_peer_type = 1;
+  memcpy(prefs.observer_peer_address, kLegacyAddress, sizeof(kLegacyAddress));
+  NodePrefs* common = &prefs;
+  common->getRadioPrefs()->setFreq(869.525f);
+  common->getCustom()->setByKey("site7", "active");
+  ObserverPrefsStream out;
+  common->saveSerial(out);
+  return toOldFormat(out.output());
+}
+
+void expectUpstreamSettings(NodePrefs* common) {
+  EXPECT_FLOAT_EQ(869.525f, common->getRadioPrefs()->getFreq());
+  char value[32]{};
+  ASSERT_TRUE(common->getCustom()->getByKey("site7", value, sizeof(value) - 1));
+  EXPECT_STREQ("active", value);
+}
+}  // namespace
+
+TEST(ObserverLegacyPrefs, PreviousFirmwareBlobUsesTheOldNames) {
+  const std::string blob = previousFirmwareBlob();
+  EXPECT_NE(blob.find("observer_peer_on:1"), std::string::npos);
+  EXPECT_NE(blob.find("observer_peer_type:1"), std::string::npos);
+  EXPECT_NE(blob.find("observer_peer_addr:\"A1B2C3D4E5F6\""), std::string::npos);
+  EXPECT_EQ(blob.find("observer_p_"), std::string::npos);
+}
+
+#ifdef OBSERVER_LEGACY_PREF_KEYS
+
+TEST(ObserverLegacyPrefs, OldNamesLoadAsTheSamePeerAndKeepOtherSettings) {
+  observer::ObserverNodePrefs prefs;
+  ObserverPrefsStream input(previousFirmwareBlob());
+  ASSERT_TRUE(static_cast<NodePrefs*>(&prefs)->loadSerial(input));
+  EXPECT_EQ(prefs.observer_version_, observer::ObserverNodePrefs::kObserverVersion);
+  EXPECT_EQ(prefs.observer_enabled, 1);
+  EXPECT_EQ(prefs.observer_peer_present, 1);
+  EXPECT_EQ(prefs.observer_peer_type, 1);
+  EXPECT_EQ(0, memcmp(prefs.observer_peer_address, kLegacyAddress, sizeof(kLegacyAddress)));
+  EXPECT_TRUE(prefs.legacyKeysUsed());
+  expectUpstreamSettings(&prefs);
+}
+
+TEST(ObserverLegacyPrefs, SaveWritesOnlyNewNamesAndReloadsWithoutLegacyUse) {
+  observer::ObserverNodePrefs prefs;
+  ObserverPrefsStream input(previousFirmwareBlob());
+  ASSERT_TRUE(static_cast<NodePrefs*>(&prefs)->loadSerial(input));
+  ObserverPrefsStream saved;
+  ASSERT_TRUE(static_cast<NodePrefs*>(&prefs)->saveSerial(saved));
+  EXPECT_EQ(saved.output().find("observer_peer"), std::string::npos);
+  EXPECT_NE(saved.output().find("observer_p_on:1"), std::string::npos);
+  EXPECT_NE(saved.output().find("observer_p_type:1"), std::string::npos);
+  EXPECT_NE(saved.output().find("observer_p_addr:\"A1B2C3D4E5F6\""), std::string::npos);
+
+  observer::ObserverNodePrefs again;
+  ObserverPrefsStream reread(saved.output());
+  ASSERT_TRUE(static_cast<NodePrefs*>(&again)->loadSerial(reread));
+  EXPECT_FALSE(again.legacyKeysUsed());
+  EXPECT_EQ(again.observer_peer_present, 1);
+  EXPECT_EQ(0, memcmp(again.observer_peer_address, kLegacyAddress, sizeof(kLegacyAddress)));
+  expectUpstreamSettings(&again);
+}
+
+TEST(ObserverLegacyPrefs, NewNameBlobStillLoadsWithoutLegacyUse) {
+  observer::ObserverNodePrefs source;
+  source.observer_version_ = observer::ObserverNodePrefs::kObserverVersion;
+  source.observer_enabled = 1;
+  source.observer_peer_present = 1;
+  source.observer_peer_type = 0;
+  memcpy(source.observer_peer_address, kLegacyAddress, sizeof(kLegacyAddress));
+  ObserverPrefsStream out;
+  ASSERT_TRUE(static_cast<NodePrefs*>(&source)->saveSerial(out));
+
+  observer::ObserverNodePrefs prefs;
+  ObserverPrefsStream input(out.output());
+  ASSERT_TRUE(static_cast<NodePrefs*>(&prefs)->loadSerial(input));
+  EXPECT_FALSE(prefs.legacyKeysUsed());
+  EXPECT_EQ(prefs.observer_enabled, 1);
+  EXPECT_EQ(prefs.observer_peer_present, 1);
+  EXPECT_EQ(0, memcmp(prefs.observer_peer_address, kLegacyAddress, sizeof(kLegacyAddress)));
+}
+
+TEST(ObserverLegacyPrefs, NewNamesWinWhenBothArePresentInEitherOrder) {
+  const std::string old_part =
+      "observer_peer_on:0,observer_peer_type:2,observer_peer_addr:\"010203040506\"";
+  const std::string new_part =
+      "observer_p_on:1,observer_p_type:1,observer_p_addr:\"A1B2C3D4E5F6\"";
+  for (const std::string& body : {old_part + "," + new_part, new_part + "," + old_part}) {
+    observer::ObserverNodePrefs prefs;
+    ObserverPrefsStream input("{observer_v:1,observer_en:1," + body + ",custom:{}}");
+    ASSERT_TRUE(static_cast<NodePrefs*>(&prefs)->loadSerial(input)) << body;
+    EXPECT_EQ(prefs.observer_peer_present, 1) << body;
+    EXPECT_EQ(prefs.observer_peer_type, 1) << body;
+    EXPECT_EQ(0, memcmp(prefs.observer_peer_address, kLegacyAddress, sizeof(kLegacyAddress))) << body;
+    EXPECT_EQ(prefs.observer_enabled, 1);
+    EXPECT_EQ(prefs.observer_version_, observer::ObserverNodePrefs::kObserverVersion);
+  }
+}
+
+TEST(ObserverLegacyPrefs, PartialOldBlobUsesOldNameOnlyWhereNewIsAbsent) {
+  observer::ObserverNodePrefs prefs;
+  ObserverPrefsStream input(
+      "{observer_v:1,observer_en:0,observer_peer_on:1,observer_p_type:1,"
+      "observer_peer_addr:\"A1B2C3D4E5F6\",custom:{}}");
+  ASSERT_TRUE(static_cast<NodePrefs*>(&prefs)->loadSerial(input));
+  EXPECT_EQ(prefs.observer_enabled, 0);
+  EXPECT_EQ(prefs.observer_peer_present, 1);
+  EXPECT_EQ(prefs.observer_peer_type, 1);
+  EXPECT_EQ(0, memcmp(prefs.observer_peer_address, kLegacyAddress, sizeof(kLegacyAddress)));
+  EXPECT_TRUE(prefs.legacyKeysUsed());
+}
+
+#else  // default key limit: no migration compiled in
+
+TEST(ObserverLegacyPrefs, DefaultLimitBuildDoesNotReadOldNames) {
+  // Why the migration exists: with the default limit the 16th key character is a parse
+  // error, so the load stops at the first old peer name and the enrolled host is lost.
+  static_assert(CONFIG_MAX_KEYLEN == 16, "this test documents the default limit");
+  observer::ObserverNodePrefs prefs;
+  ObserverPrefsStream input(previousFirmwareBlob());
+  EXPECT_FALSE(static_cast<NodePrefs*>(&prefs)->loadSerial(input));
+  EXPECT_EQ(prefs.observer_peer_present, 0);
+  EXPECT_EQ(prefs.observer_peer_type, 0);
+  const uint8_t none[6]{};
+  EXPECT_EQ(0, memcmp(prefs.observer_peer_address, none, sizeof(none)));
+}
+
+#endif
+
+
 int main(int argc, char** argv) {
   ::testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();

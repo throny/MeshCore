@@ -29,6 +29,9 @@ jobs:
       - name: Run observer unit tests
         run: pio test -e native -f test_observer_transport
 
+      - name: Run observer unit tests with legacy prefs key migration
+        run: pio test -e native_legacy_keys
+
       - name: Install platform packages
         run: pio pkg install -e "$PIO_ENV"
 

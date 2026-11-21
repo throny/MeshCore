@@ -965,6 +965,10 @@ void MyMesh::begin(FILESYSTEM *fs) {
   // load persisted prefs
   _cli.loadPrefs(_fs);
 #if defined(SENSECAP_OBSERVER_TRANSPORT)
+#ifdef OBSERVER_LEGACY_PREF_KEYS
+  // Nothing else rewrites prefs.json at boot: rewrite it once so old key names are replaced.
+  if (_prefs.legacyKeysUsed() && _cli.savePrefs(_fs)) _prefs.clearLegacyKeysUsed();
+#endif
   observer::PeerIdentity peer = observerPeer();
   observer::transport.attachPreferences(observerEnabled(), peer, observerHasPeer());
   observer::transport.setPreferenceCallbacks(saveObserverEnabled, saveObserverPeer);

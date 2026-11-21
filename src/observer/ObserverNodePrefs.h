@@ -19,6 +19,22 @@ static_assert(len(kEnabled) < CONFIG_MAX_KEYLEN, "prefs key too long");
 static_assert(len(kPeerPresent) < CONFIG_MAX_KEYLEN, "prefs key too long");
 static_assert(len(kPeerType) < CONFIG_MAX_KEYLEN, "prefs key too long");
 static_assert(len(kPeerAddress) < CONFIG_MAX_KEYLEN, "prefs key too long");
+// Upstream's default CONFIG_MAX_KEYLEN, independent of any build override.
+constexpr size_t kDefaultMaxKeyLen = 16;
+static_assert(len(kVersion) < kDefaultMaxKeyLen, "prefs key too long for the default limit");
+static_assert(len(kEnabled) < kDefaultMaxKeyLen, "prefs key too long for the default limit");
+static_assert(len(kPeerPresent) < kDefaultMaxKeyLen, "prefs key too long for the default limit");
+static_assert(len(kPeerType) < kDefaultMaxKeyLen, "prefs key too long for the default limit");
+static_assert(len(kPeerAddress) < kDefaultMaxKeyLen, "prefs key too long for the default limit");
+#ifdef OBSERVER_LEGACY_PREF_KEYS
+// Names written by firmware older than the rename. Read-only, see structure().
+constexpr const char* kLegacyPeerPresent = "observer_peer_on";
+constexpr const char* kLegacyPeerType = "observer_peer_type";
+constexpr const char* kLegacyPeerAddress = "observer_peer_addr";
+static_assert(len(kLegacyPeerPresent) < CONFIG_MAX_KEYLEN, "build CONFIG_MAX_KEYLEN too small for legacy keys");
+static_assert(len(kLegacyPeerType) < CONFIG_MAX_KEYLEN, "build CONFIG_MAX_KEYLEN too small for legacy keys");
+static_assert(len(kLegacyPeerAddress) < CONFIG_MAX_KEYLEN, "build CONFIG_MAX_KEYLEN too small for legacy keys");
+#endif
 }  // namespace prefs_key
 
 class ObserverNodePrefs : public NodePrefs {
@@ -35,12 +51,46 @@ class ObserverNodePrefs : public NodePrefs {
     NodePrefs::structure();
     def(prefs_key::kVersion, observer_version_);
     def(prefs_key::kEnabled, observer_enabled);
+#ifdef OBSERVER_LEGACY_PREF_KEYS
+    // A new name always wins; an old name is used only while its new name has not been read
+    // (file order is not relied on). Old names are never written.
+    noteNewKey(prefs_key::kPeerPresent, kSeenPresent);
+    noteNewKey(prefs_key::kPeerType, kSeenType);
+    noteNewKey(prefs_key::kPeerAddress, kSeenAddress);
+    if (useLegacyKey(prefs_key::kLegacyPeerPresent, kSeenPresent)) def(prefs_key::kLegacyPeerPresent, observer_peer_present);
+    if (useLegacyKey(prefs_key::kLegacyPeerType, kSeenType)) def(prefs_key::kLegacyPeerType, observer_peer_type);
+    if (useLegacyKey(prefs_key::kLegacyPeerAddress, kSeenAddress)) {
+      def(prefs_key::kLegacyPeerAddress, observer_peer_address, sizeof(observer_peer_address));
+    }
+#endif
     def(prefs_key::kPeerPresent, observer_peer_present);
     def(prefs_key::kPeerType, observer_peer_type);
     def(prefs_key::kPeerAddress, observer_peer_address, sizeof(observer_peer_address));
   }
 
+#ifdef OBSERVER_LEGACY_PREF_KEYS
+  static constexpr uint8_t kSeenPresent = 1, kSeenType = 2, kSeenAddress = 4;
+  uint8_t seen_new_keys_ = 0;
+  bool legacy_keys_used_ = false;
+
+  bool reading() const { return _context && _context->op() == READ; }
+  void noteNewKey(const char* key, uint8_t bit) {
+    if (reading() && _context->keyMatch(getDepth(), key)) seen_new_keys_ |= bit;
+  }
+  bool useLegacyKey(const char* key, uint8_t bit) {
+    if (!reading() || (seen_new_keys_ & bit) || !_context->keyMatch(getDepth(), key)) return false;
+    legacy_keys_used_ = true;
+    return true;
+  }
+#endif
+
  public:
+#ifdef OBSERVER_LEGACY_PREF_KEYS
+  // True when the last load took a value from an old-name key, so the file still holds old names.
+  bool legacyKeysUsed() const { return legacy_keys_used_; }
+  void clearLegacyKeysUsed() { legacy_keys_used_ = false; }
+#endif
+
   template <typename Save>
   bool persistEnabled(bool enabled, Save save) {
     const uint8_t previous_enabled = observer_enabled;

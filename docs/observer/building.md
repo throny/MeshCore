@@ -59,6 +59,16 @@ needs `g++`; it never touches Bluetooth hardware.
 These tests do not prove board compatibility, recovery, power use, or
 sustained radio performance.
 
+## Settings key migration
+
+Firmware older than the `observer_p_*` key rename stored the enrolled host
+under longer key names. `SenseCap_Solar_repeater_observer` sets
+`-D OBSERVER_LEGACY_PREF_KEYS=1` and `-D CONFIG_MAX_KEYLEN=19` so such a device
+keeps its enrolment: old names are read when the new ones are absent, and the
+settings file is rewritten once at boot with the new names only. Both flags can
+be removed once every older device has booted this firmware once. The
+`native_legacy_keys` test environment covers this path.
+
 ## Release
 
 CI (`.github/workflows/observer-build.yml`) runs the tests and the release
