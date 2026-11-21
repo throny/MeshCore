@@ -44,6 +44,9 @@ jobs:
 
   check:
     name: Check against upstream ${{ matrix.branch }}
+    # dev is informational for now: its result is in the job summary, but a
+    # conflict there must not fail the run or send a notification.
+    continue-on-error: ${{ matrix.branch == 'dev' }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
