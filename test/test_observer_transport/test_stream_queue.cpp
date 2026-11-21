@@ -1649,7 +1649,7 @@ TEST(ObserverNodePrefs, MissingUnknownVersionAndEmptyCustomStayDisabled) {
 
   observer::ObserverNodePrefs unknown;
   ObserverPrefsStream unknown_version(
-      "{observer_v:99,observer_en:1,observer_peer_on:1,custom:{}}");
+      "{observer_v:99,observer_en:1,observer_p_on:1,custom:{}}");
   ASSERT_TRUE(unknown.loadSerial(unknown_version));
   EXPECT_FALSE(unknown.observer_version_ == observer::ObserverNodePrefs::kObserverVersion &&
                unknown.observer_enabled == 1);
@@ -1749,8 +1749,8 @@ TEST(ObserverNodePrefs, EnablingUnknownSchemaClearsUntrustedPeerBeforeSave) {
   const uint8_t old_address[] = {1, 2, 3, 4, 5, 6};
   observer::ObserverNodePrefs prefs;
   ObserverPrefsStream legacy(
-      "{observer_v:99,observer_en:0,observer_peer_on:1,observer_peer_type:1,"
-      "observer_peer_addr:\"010203040506\",custom:{}}");
+      "{observer_v:99,observer_en:0,observer_p_on:1,observer_p_type:1,"
+      "observer_p_addr:\"010203040506\",custom:{}}");
   ASSERT_TRUE(prefs.loadSerial(legacy));
   ASSERT_EQ(prefs.observer_version_, 99);
   ASSERT_EQ(prefs.observer_peer_present, 1);
@@ -1774,8 +1774,8 @@ TEST(ObserverNodePrefs, EnablingUnknownSchemaClearsUntrustedPeerBeforeSave) {
 TEST(ObserverNodePrefs, FailedEnableFromUnknownSchemaRestoresPeerAndUpstreamDirtyPrefs) {
   observer::ObserverNodePrefs prefs;
   ObserverPrefsStream legacy(
-      "{observer_v:99,observer_en:0,observer_peer_on:1,observer_peer_type:1,"
-      "observer_peer_addr:\"010203040506\",custom:{}}");
+      "{observer_v:99,observer_en:0,observer_p_on:1,observer_p_type:1,"
+      "observer_p_addr:\"010203040506\",custom:{}}");
   ASSERT_TRUE(prefs.loadSerial(legacy));
   NodePrefs* common_prefs = &prefs;
   common_prefs->getRadioPrefs()->setFreq(915.0f);
@@ -2084,8 +2084,8 @@ TEST(ObserverNodePrefs, BootStartupDoesNotInitializeMissingUnknownOrDisabledPref
 
   observer::ObserverNodePrefs unknown;
   ObserverPrefsStream unknown_json(
-      "{observer_v:99,observer_en:1,observer_peer_on:1,observer_peer_type:1,"
-      "observer_peer_addr:\"010203040506\",custom:{}}");
+      "{observer_v:99,observer_en:1,observer_p_on:1,observer_p_type:1,"
+      "observer_p_addr:\"010203040506\",custom:{}}");
   ASSERT_TRUE(unknown.loadSerial(unknown_json));
   expect_no_start(unknown);
 

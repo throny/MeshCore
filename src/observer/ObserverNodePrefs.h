@@ -5,6 +5,22 @@
 
 namespace observer {
 
+// ConfigSerializer keeps at most CONFIG_MAX_KEYLEN-1 characters of a key and a longer key
+// in prefs.json aborts the whole load, so every key below must stay within that limit.
+namespace prefs_key {
+constexpr size_t len(const char* s) { return *s ? 1 + len(s + 1) : 0; }
+constexpr const char* kVersion = "observer_v";
+constexpr const char* kEnabled = "observer_en";
+constexpr const char* kPeerPresent = "observer_p_on";
+constexpr const char* kPeerType = "observer_p_type";
+constexpr const char* kPeerAddress = "observer_p_addr";
+static_assert(len(kVersion) < CONFIG_MAX_KEYLEN, "prefs key too long");
+static_assert(len(kEnabled) < CONFIG_MAX_KEYLEN, "prefs key too long");
+static_assert(len(kPeerPresent) < CONFIG_MAX_KEYLEN, "prefs key too long");
+static_assert(len(kPeerType) < CONFIG_MAX_KEYLEN, "prefs key too long");
+static_assert(len(kPeerAddress) < CONFIG_MAX_KEYLEN, "prefs key too long");
+}  // namespace prefs_key
+
 class ObserverNodePrefs : public NodePrefs {
  public:
   static constexpr uint8_t kObserverVersion = 1;
@@ -17,11 +33,11 @@ class ObserverNodePrefs : public NodePrefs {
  protected:
   void structure() override {
     NodePrefs::structure();
-    def("observer_v", observer_version_);
-    def("observer_en", observer_enabled);
-    def("observer_peer_on", observer_peer_present);
-    def("observer_peer_type", observer_peer_type);
-    def("observer_peer_addr", observer_peer_address, sizeof(observer_peer_address));
+    def(prefs_key::kVersion, observer_version_);
+    def(prefs_key::kEnabled, observer_enabled);
+    def(prefs_key::kPeerPresent, observer_peer_present);
+    def(prefs_key::kPeerType, observer_peer_type);
+    def(prefs_key::kPeerAddress, observer_peer_address, sizeof(observer_peer_address));
   }
 
  public:
