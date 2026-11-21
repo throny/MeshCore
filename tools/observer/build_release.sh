@@ -51,7 +51,7 @@ export PATCH_SHA256="$(file_sha "$patch_file")"
 export SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)"
 export TZ=UTC LC_ALL=C
 build_date="$(date -u -d "@$SOURCE_DATE_EPOCH" '+%d %b %Y')"
-export PLATFORMIO_BUILD_FLAGS="-DSENSECAP_OBSERVER_COC_CHANNELS=2 -DFIRMWARE_VERSION='\"$name\"' -DFIRMWARE_BUILD_DATE='\"$build_date\"'"
+export PLATFORMIO_BUILD_FLAGS="-DFIRMWARE_VERSION='\"$name\"' -DFIRMWARE_BUILD_DATE='\"$build_date\"'"
 
 pio run -e "$env_name"
 pio run -e "$env_name" -t create_uf2

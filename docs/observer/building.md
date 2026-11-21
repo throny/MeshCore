@@ -1,9 +1,12 @@
 # Build, test and release the observer firmware
 
 The observer firmware is the `SenseCap_Solar_repeater_observer` PlatformIO
-environment. The Bluetooth LE CoC log transport is enabled by building it with
-`-DSENSECAP_OBSERVER_COC_CHANNELS=2`; without that flag the environment builds
-the GATT-only observer (`v1.18.0-obs544`).
+environment. The Bluetooth LE CoC log transport is the default: the
+environment sets `-D SENSECAP_OBSERVER_COC_CHANNELS=2` in its `build_flags`, so
+a plain `pio run -e SenseCap_Solar_repeater_observer` builds the CoC firmware
+(`v1.18.0-coc`). The GATT-only legacy observer (`v1.18.0-obs544`) is only built
+if the define is removed, for example with
+`PLATFORMIO_BUILD_FLAGS=-USENSECAP_OBSERVER_COC_CHANNELS`.
 
 These are application-only images: they do not include a bootloader or
 SoftDevice update. Confirm your board and bootloader, back up your identity,
@@ -29,9 +32,9 @@ tools/observer/build_release.sh observer-coc-local out/release
 ```
 
 This installs the packages, checks and applies the framework patch (an already
-patched package is accepted if it reverts to the pinned original), builds with
-CoC enabled, and writes `<name>.uf2`, `<name>.zip`, `<name>.hex`, `SHA256SUMS`
-and `provenance.json` to the output directory, which must not exist yet. The
+patched package is accepted if it reverts to the pinned original), builds the
+environment as configured (CoC enabled), and writes `<name>.uf2`,
+`<name>.zip`, `<name>.hex`, `SHA256SUMS` and `provenance.json` to the output directory, which must not exist yet. The
 build date and compiler timestamps come from the commit time
 (`SOURCE_DATE_EPOCH`).
 

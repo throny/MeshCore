@@ -44,8 +44,11 @@ jobs:
       - name: Setup Build Environment
         uses: ./.github/actions/setup-build-environment
 
-      - name: Build without CoC (compile check)
-        run: PLATFORMIO_BUILD_DIR="$RUNNER_TEMP/plain-build" pio run -e "$PIO_ENV"
+      - name: Build legacy GATT-only variant (compile check)
+        run: >-
+          PLATFORMIO_BUILD_DIR="$RUNNER_TEMP/legacy-build"
+          PLATFORMIO_BUILD_FLAGS=-USENSECAP_OBSERVER_COC_CHANNELS
+          pio run -e "$PIO_ENV"
 
       - name: Build release firmware
         env:
