@@ -7,6 +7,11 @@ on:
     tags:
       - 'v*-coc*'
   workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Build and upload release files as an artifact only; do not publish'
+        type: boolean
+        default: true
 
 env:
   PIO_ENV: SenseCap_Solar_repeater_observer
@@ -39,32 +44,83 @@ jobs:
       - name: Setup Build Environment
         uses: ./.github/actions/setup-build-environment
 
-      - name: Install platform packages
-        run: pio pkg install -e "$PIO_ENV"
+      - name: Build without CoC (compile check)
+        run: PLATFORMIO_BUILD_DIR="$RUNNER_TEMP/plain-build" pio run -e "$PIO_ENV"
 
-      - name: Apply Bluefruit pre-enable hook
+      - name: Build release firmware
+        env:
+          RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
         run: |
-          framework="$(pio pkg list -e "$PIO_ENV" >/dev/null; echo "${PLATFORMIO_CORE_DIR:-$HOME/.platformio}/packages/framework-arduinoadafruitnrf52")"
-          test -f "$framework/libraries/Bluefruit52Lib/src/bluefruit.cpp"
-          patch -p1 -d "$framework" < patches/bluefruit-pre-enable.patch
+          if [ -n "$RELEASE_TAG" ]; then
+            name="$RELEASE_TAG"
+          else
+            name="observer-coc-$(git rev-parse --short=12 HEAD)"
+          fi
+          bash tools/observer/build_release.sh "$name" dist
+          cat dist/provenance.json
 
-      - name: Build firmware
-        run: |
-          pio run -e "$PIO_ENV"
-          pio run -e "$PIO_ENV" -t create_uf2
-
-      - name: Checksums
-        run: |
-          cd ".pio/build/$PIO_ENV"
-          sha256sum firmware.hex firmware.zip firmware.uf2 | tee SHA256SUMS
-
-      - name: Upload firmware
+      - name: Upload release files
         uses: actions/upload-artifact@v4
         with:
-          name: observer-coc-firmware
-          path: |
-            .pio/build/${{ env.PIO_ENV }}/firmware.hex
-            .pio/build/${{ env.PIO_ENV }}/firmware.zip
-            .pio/build/${{ env.PIO_ENV }}/firmware.uf2
-            .pio/build/${{ env.PIO_ENV }}/SHA256SUMS
+          name: observer-coc-release
+          path: dist/
           if-no-files-found: error
+
+  release:
+    # Publishes only for a pushed tag, or a manual run on a tag with dry_run off.
+    if: >-
+      github.ref_type == 'tag' &&
+      (github.event_name == 'push' || inputs.dry_run == false)
+    needs: [test, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download release files
+        uses: actions/download-artifact@v4
+        with:
+          name: observer-coc-release
+          path: dist
+
+      - name: Check release files
+        working-directory: dist
+        run: |
+          tag="$GITHUB_REF_NAME"
+          for file in "$tag.uf2" "$tag.zip" "$tag.hex" SHA256SUMS provenance.json; do
+            test -s "$file"
+          done
+          sha256sum -c SHA256SUMS
+          test "$(jq -r .tag provenance.json)" = "$tag"
+          test "$(jq -r .commit provenance.json)" = "$GITHUB_SHA"
+
+      - name: Create prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="$GITHUB_REF_NAME"
+          cat > notes.md <<'EOF'
+          Experimental observer firmware for the SenseCAP Solar repeater with the
+          Bluetooth LE CoC log transport. Community firmware, not an official
+          MeshCore release.
+
+          | File | Purpose |
+          | --- | --- |
+          | `TAG.uf2` | USB application update |
+          | `TAG.zip` | BLE DFU application update, with a compatible bootloader |
+          | `TAG.hex` | Application image (Intel HEX) |
+          | `SHA256SUMS` | Download checksums |
+          | `provenance.json` | Commit, build tools and framework patch hashes |
+
+          These are application-only images: they do not include a bootloader or
+          SoftDevice update. Confirm your board and bootloader, back up your
+          identity, and have a recovery method before flashing.
+          See docs/observer/building.md to rebuild from source.
+          EOF
+          sed -i "s/TAG/$tag/g" notes.md
+          gh release create "$tag" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
+            --prerelease \
+            --latest=false \
+            --title "$tag (experimental)" \
+            --notes-file notes.md
