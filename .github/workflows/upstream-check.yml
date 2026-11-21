@@ -1,0 +1,148 @@
+name: Upstream compatibility check
+
+# Weekly check that observer-coc still merges with, builds against and passes
+# its tests on top of upstream main and dev. Nothing is ever merged into
+# observer-coc: the trial merge exists only in the runner.
+# Scheduled workflows run from the default branch, which is observer-coc.
+
+on:
+  schedule:
+    - cron: '17 5 * * 1'   # Mondays 05:17 UTC
+  workflow_dispatch:
+
+env:
+  PIO_ENV: SenseCap_Solar_repeater_observer
+  UPSTREAM_URL: https://github.com/meshcore-dev/MeshCore.git
+
+permissions:
+  contents: read
+
+jobs:
+  sync:
+    name: Sync fork ${{ matrix.branch }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        branch: [main, dev]
+    steps:
+      # Fast-forward only. If the fork branch has diverged this step fails
+      # and nothing is overwritten.
+      - name: Fast-forward fork branch from upstream
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh repo sync "$GITHUB_REPOSITORY" --branch "${{ matrix.branch }}"
+          {
+            echo "### Fork sync: ${{ matrix.branch }}"
+            echo "Fork \`${{ matrix.branch }}\` is now identical to upstream."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  check:
+    name: Check against upstream ${{ matrix.branch }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        branch: [main, dev]
+    steps:
+      - name: Clone Repo
+        uses: actions/checkout@v4
+        with:
+          ref: observer-coc
+          fetch-depth: 0
+
+      - name: Setup Build Environment
+        uses: ./.github/actions/setup-build-environment
+
+      - name: Trial merge (runner only, never pushed)
+        id: merge
+        run: |
+          git fetch --no-tags "$UPSTREAM_URL" "refs/heads/${{ matrix.branch }}:refs/remotes/upstream/${{ matrix.branch }}"
+          up="upstream/${{ matrix.branch }}"
+          echo "sha=$(git rev-parse "$up")" >> "$GITHUB_OUTPUT"
+          echo "ahead=$(git rev-list --count "HEAD..$up")" >> "$GITHUB_OUTPUT"
+          if git -c user.name=upstream-check -c user.email=upstream-check@localhost \
+               merge --no-edit "$up"; then
+            echo "clean=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "clean=false" >> "$GITHUB_OUTPUT"
+            {
+              echo 'conflicts<<EOF'
+              git diff --name-only --diff-filter=U
+              echo EOF
+            } >> "$GITHUB_OUTPUT"
+            git merge --abort
+          fi
+
+      - name: Run observer unit tests
+        id: unit
+        if: steps.merge.outputs.clean == 'true'
+        continue-on-error: true
+        run: pio test -e native -f test_observer_transport
+
+      - name: Install platform packages
+        id: pkg
+        if: steps.merge.outputs.clean == 'true'
+        continue-on-error: true
+        run: pio pkg install -e "$PIO_ENV"
+
+      - name: Run observer CoC tests
+        id: coc
+        if: steps.pkg.outcome == 'success'
+        continue-on-error: true
+        run: bash tools/observer/run_coc_tests.sh
+
+      - name: Build CoC firmware (with framework patch)
+        id: build
+        if: steps.merge.outputs.clean == 'true'
+        continue-on-error: true
+        run: bash tools/observer/build_release.sh "upstream-check-${{ matrix.branch }}" dist
+
+      - name: Report
+        if: always()
+        env:
+          SHA: ${{ steps.merge.outputs.sha }}
+          AHEAD: ${{ steps.merge.outputs.ahead }}
+          CLEAN: ${{ steps.merge.outputs.clean }}
+          CONFLICTS: ${{ steps.merge.outputs.conflicts }}
+          UNIT: ${{ steps.unit.outcome }}
+          COC: ${{ steps.coc.outcome }}
+          BUILD: ${{ steps.build.outcome }}
+        run: |
+          fail=0
+          {
+            echo "### observer-coc + upstream ${{ matrix.branch }}"
+            echo
+            echo "| Item | Result |"
+            echo "| --- | --- |"
+            echo "| Upstream sha | \`${SHA:-unknown}\` |"
+            echo "| Upstream commits not in observer-coc | ${AHEAD:-unknown} |"
+            if [ "$CLEAN" = true ]; then
+              echo "| Merge | clean |"
+              echo "| Unit tests | $UNIT |"
+              echo "| CoC tests | ${COC:-skipped} |"
+              echo "| Firmware build | $BUILD |"
+              for r in "$UNIT" "${COC:-failure}" "$BUILD"; do
+                [ "$r" = success ] || fail=1
+              done
+            elif [ "$CLEAN" = false ]; then
+              echo "| Merge | **conflict** |"
+              echo "| Tests and build | not run |"
+              echo
+              echo "Conflicting files:"
+              echo
+              echo '```'
+              echo "$CONFLICTS"
+              echo '```'
+              fail=1
+            else
+              echo "| Merge | not attempted (setup failed) |"
+              fail=1
+            fi
+            echo
+            echo "The merge was done in the runner only; observer-coc is unchanged."
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit $fail

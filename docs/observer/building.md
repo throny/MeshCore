@@ -76,3 +76,24 @@ The workflow builds with the tag as the firmware version and creates a GitHub
 prerelease (never marked latest) with the five files. To try the release path
 without publishing, run the workflow manually with `dry_run` checked and
 download the artifact.
+
+## Weekly upstream check
+
+`.github/workflows/upstream-check.yml` runs every Monday (05:17 UTC) and on
+demand. It never changes `observer-coc`.
+
+- The fork's `main` and `dev` branches are fast-forwarded to upstream's. If a
+  branch cannot be fast-forwarded the step fails; nothing is forced.
+- For each of upstream `main` and `dev` (independent jobs), `observer-coc` is
+  merged with that branch in the runner only. If it merges cleanly, the unit
+  tests, the CoC tests and the firmware build (including the framework patch)
+  run on the result.
+- The job summary shows the upstream commit, how many upstream commits
+  `observer-coc` does not have, the merge result (conflicting files are
+  listed), and the test and build results. A conflict or a failure fails the
+  job, so GitHub sends a notification.
+
+Scheduled workflows only run from the default branch, so the fork's default
+branch is `observer-coc`. To act on a conflict, merge or rebase locally and
+push to `observer-coc` yourself.
+
