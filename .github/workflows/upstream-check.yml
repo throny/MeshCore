@@ -1,8 +1,10 @@
 name: Upstream compatibility check
 
 # Weekly check that observer-coc still merges with, builds against and passes
-# its tests on top of upstream main and dev. Nothing is ever merged into
-# observer-coc: the trial merge exists only in the runner.
+# its tests on top of upstream main and dev. The trial merge happens in the
+# runner. For upstream main only: if the merge is clean and the tests and the
+# firmware build pass, the tested merge commit is pushed to observer-coc by the
+# separate publish job. dev is check-only.
 # Scheduled workflows run from the default branch, which is observer-coc.
 
 on:
@@ -57,16 +59,34 @@ jobs:
       - name: Setup Build Environment
         uses: ./.github/actions/setup-build-environment
 
-      - name: Trial merge (runner only, never pushed)
+      - name: Trial merge (runner only; main may be published later)
         id: merge
         run: |
           git fetch --no-tags "$UPSTREAM_URL" "refs/heads/${{ matrix.branch }}:refs/remotes/upstream/${{ matrix.branch }}"
           up="upstream/${{ matrix.branch }}"
-          echo "sha=$(git rev-parse "$up")" >> "$GITHUB_OUTPUT"
-          echo "ahead=$(git rev-list --count "HEAD..$up")" >> "$GITHUB_OUTPUT"
-          if git -c user.name=upstream-check -c user.email=upstream-check@localhost \
-               merge --no-edit "$up"; then
+          old=$(git rev-parse HEAD)
+          ahead=$(git rev-list --count "HEAD..$up")
+          {
+            echo "old=$old"
+            echo "sha=$(git rev-parse "$up")"
+            echo "ahead=$ahead"
+          } >> "$GITHUB_OUTPUT"
+          if [ "$ahead" = 0 ]; then
+            echo "uptodate=true" >> "$GITHUB_OUTPUT"
             echo "clean=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          export GIT_AUTHOR_NAME=throny GIT_COMMITTER_NAME=throny
+          export GIT_AUTHOR_EMAIL=11830644+throny@users.noreply.github.com
+          export GIT_COMMITTER_EMAIL=11830644+throny@users.noreply.github.com
+          if git merge --no-ff -m "Merge upstream ${{ matrix.branch }} into observer-coc" "$up"; then
+            echo "clean=true" >> "$GITHUB_OUTPUT"
+            echo "new=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+            echo "tree=$(git rev-parse 'HEAD^{tree}')" >> "$GITHUB_OUTPUT"
+            # The workflow token cannot push changes to workflow files.
+            if [ -n "$(git diff --name-only "$old" HEAD -- .github/workflows/)" ]; then
+              echo "wfchanged=true" >> "$GITHUB_OUTPUT"
+            fi
           else
             echo "clean=false" >> "$GITHUB_OUTPUT"
             {
@@ -79,13 +99,13 @@ jobs:
 
       - name: Run observer unit tests
         id: unit
-        if: steps.merge.outputs.clean == 'true'
+        if: steps.merge.outputs.clean == 'true' && steps.merge.outputs.uptodate != 'true'
         continue-on-error: true
         run: pio test -e native -f test_observer_transport
 
       - name: Install platform packages
         id: pkg
-        if: steps.merge.outputs.clean == 'true'
+        if: steps.merge.outputs.clean == 'true' && steps.merge.outputs.uptodate != 'true'
         continue-on-error: true
         run: pio pkg install -e "$PIO_ENV"
 
@@ -97,9 +117,41 @@ jobs:
 
       - name: Build CoC firmware (with framework patch)
         id: build
-        if: steps.merge.outputs.clean == 'true'
+        if: steps.merge.outputs.clean == 'true' && steps.merge.outputs.uptodate != 'true'
         continue-on-error: true
         run: bash tools/observer/build_release.sh "upstream-check-${{ matrix.branch }}" dist
+
+      # main only: package the exact merge commit that was tested.
+      - name: Package tested merge for publishing
+        id: handoff
+        if: >-
+          matrix.branch == 'main'
+          && steps.unit.outcome == 'success'
+          && steps.coc.outcome == 'success'
+          && steps.build.outcome == 'success'
+          && steps.merge.outputs.wfchanged != 'true'
+        env:
+          OLD: ${{ steps.merge.outputs.old }}
+          NEW: ${{ steps.merge.outputs.new }}
+          TREE: ${{ steps.merge.outputs.tree }}
+          UPSHA: ${{ steps.merge.outputs.sha }}
+          AHEAD: ${{ steps.merge.outputs.ahead }}
+        run: |
+          [ "$(git rev-parse HEAD)" = "$NEW" ]
+          mkdir -p "$RUNNER_TEMP/handoff"
+          git branch -f merge-result HEAD
+          git bundle create "$RUNNER_TEMP/handoff/merge.bundle" merge-result "^$OLD"
+          printf 'OLD=%s\nNEW=%s\nTREE=%s\nUPSHA=%s\nAHEAD=%s\n' \
+            "$OLD" "$NEW" "$TREE" "$UPSHA" "$AHEAD" > "$RUNNER_TEMP/handoff/meta.env"
+
+      - name: Upload tested merge
+        if: steps.handoff.outcome == 'success'
+        uses: actions/upload-artifact@v7
+        with:
+          name: merge-main
+          path: ${{ runner.temp }}/handoff
+          retention-days: 1
+          if-no-files-found: error
 
       - name: Report
         if: always()
@@ -107,6 +159,8 @@ jobs:
           SHA: ${{ steps.merge.outputs.sha }}
           AHEAD: ${{ steps.merge.outputs.ahead }}
           CLEAN: ${{ steps.merge.outputs.clean }}
+          UPTODATE: ${{ steps.merge.outputs.uptodate }}
+          WFCHANGED: ${{ steps.merge.outputs.wfchanged }}
           CONFLICTS: ${{ steps.merge.outputs.conflicts }}
           UNIT: ${{ steps.unit.outcome }}
           COC: ${{ steps.coc.outcome }}
@@ -120,7 +174,9 @@ jobs:
             echo "| --- | --- |"
             echo "| Upstream sha | \`${SHA:-unknown}\` |"
             echo "| Upstream commits not in observer-coc | ${AHEAD:-unknown} |"
-            if [ "$CLEAN" = true ]; then
+            if [ "$UPTODATE" = true ]; then
+              echo "| Result | already up to date, nothing to do |"
+            elif [ "$CLEAN" = true ]; then
               echo "| Merge | clean |"
               echo "| Unit tests | $UNIT |"
               echo "| CoC tests | ${COC:-skipped} |"
@@ -128,6 +184,16 @@ jobs:
               for r in "$UNIT" "${COC:-failure}" "$BUILD"; do
                 [ "$r" = success ] || fail=1
               done
+              if [ "${{ matrix.branch }}" = main ] && [ "$WFCHANGED" = true ]; then
+                echo "| Publish | **blocked** |"
+                echo
+                echo "**Blocked by workflow-file change:** this merge modifies files under \`.github/workflows/\`, which the workflow token cannot push. Merge upstream main into observer-coc manually."
+                fail=1
+              elif [ "${{ matrix.branch }}" = main ] && [ $fail = 0 ]; then
+                echo "| Publish | handed to the publish job |"
+              elif [ "${{ matrix.branch }}" = main ]; then
+                echo "| Publish | not published (failure above) |"
+              fi
             elif [ "$CLEAN" = false ]; then
               echo "| Merge | **conflict** |"
               echo "| Tests and build | not run |"
@@ -143,6 +209,66 @@ jobs:
               fail=1
             fi
             echo
-            echo "The merge was done in the runner only; observer-coc is unchanged."
+            if [ "${{ matrix.branch }}" = main ]; then
+              echo "observer-coc is changed only by the publish job."
+            else
+              echo "dev is check-only; observer-coc is unchanged."
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
           exit $fail
+
+  publish:
+    name: Publish tested merge of upstream main
+    needs: check
+    # Runs even when the dev leg fails; it acts only if the main leg uploaded
+    # a tested merge.
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download tested merge
+        id: dl
+        continue-on-error: true
+        uses: actions/download-artifact@v8
+        with:
+          name: merge-main
+          path: ${{ runner.temp }}/handoff
+
+      - name: Clone Repo
+        if: steps.dl.outcome == 'success'
+        uses: actions/checkout@v6
+        with:
+          ref: observer-coc
+          fetch-depth: 0
+
+      - name: Push merge (fast-forward only)
+        if: steps.dl.outcome == 'success'
+        run: |
+          h="$RUNNER_TEMP/handoff"
+          . "$h/meta.env"
+          die() {
+            { echo "### Publish upstream main"; echo; echo "**Failed:** $1"; } >> "$GITHUB_STEP_SUMMARY"
+            echo "::error::$1"
+            exit 1
+          }
+          git fetch "$h/merge.bundle" merge-result:refs/heads/merge-result
+          [ "$(git rev-parse merge-result)" = "$NEW" ] || die "bundle does not contain the tested merge commit."
+          [ "$(git rev-parse 'merge-result^{tree}')" = "$TREE" ] || die "merge tree differs from the tested tree."
+          [ "$(git rev-parse 'merge-result^1')" = "$OLD" ] || die "merge is not based on the tested observer-coc commit."
+          want='throny <11830644+throny@users.noreply.github.com>'
+          [ "$(git log -1 --format='%an <%ae>' "$NEW")" = "$want" ] || die "unexpected author."
+          [ "$(git log -1 --format='%cn <%ce>' "$NEW")" = "$want" ] || die "unexpected committer."
+          if [ -n "$(git diff --name-only "$OLD" "$NEW" -- .github/workflows/)" ]; then
+            die "blocked: the merge modifies .github/workflows/, which the workflow token cannot push. Merge manually."
+          fi
+          cur=$(git ls-remote origin refs/heads/observer-coc | cut -f1)
+          [ "$cur" = "$OLD" ] || die "observer-coc moved since the check ($OLD -> $cur); nothing pushed. Re-run the workflow."
+          git push origin "$NEW:refs/heads/observer-coc" || die "push rejected (observer-coc moved or push not permitted); nothing was forced."
+          {
+            echo "### Publish upstream main"
+            echo
+            echo "Merged and pushed to observer-coc: \`$OLD\` -> \`$NEW\` ($AHEAD upstream commits, upstream \`$UPSHA\`)."
+            echo
+            echo "Tests and firmware build ran on this exact merge in the check job. Pushes made with the workflow token do not start other workflows."
+          } >> "$GITHUB_STEP_SUMMARY"

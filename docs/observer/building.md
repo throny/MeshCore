@@ -97,18 +97,34 @@ download the artifact.
 ## Weekly upstream check
 
 `.github/workflows/upstream-check.yml` runs every Monday (05:17 UTC) and on
-demand. It never changes `observer-coc`.
+demand.
 
 - The fork's `main` and `dev` branches are fast-forwarded to upstream's. If a
   branch cannot be fast-forwarded the step fails; nothing is forced.
 - For each of upstream `main` and `dev` (independent jobs), `observer-coc` is
-  merged with that branch in the runner only. If it merges cleanly, the unit
-  tests, the CoC tests and the firmware build (including the framework patch)
-  run on the result.
-- The job summary shows the upstream commit, how many upstream commits
-  `observer-coc` does not have, the merge result (conflicting files are
-  listed), and the test and build results. A conflict or a failure fails the
-  job, so GitHub sends a notification.
+  merged with that branch in the runner. If it merges cleanly, the unit tests,
+  the CoC tests and the firmware build (including the framework patch) run on
+  the result.
+- **`dev` is check-only**: nothing is ever pushed for it.
+- **`main` is merged automatically when safe.** If the merge is clean and the
+  tests and build all pass, a separate `publish` job (the only job with
+  `contents: write` besides the fork sync) pushes that exact merge commit to
+  `observer-coc` with a plain fast-forward push, never forced. The commit is
+  authored and committed as the repository owner, with the message
+  `Merge upstream main into observer-coc`. If `observer-coc` moved since the
+  check started, nothing is pushed and the job fails; re-run it. If upstream
+  `main` is already contained in `observer-coc`, nothing happens.
+- If the merge changes files under `.github/workflows/`, it is not pushed: the
+  workflow token is not allowed to modify workflow files. The job fails with a
+  "blocked by workflow-file change" line and the merge must be done manually.
+- Pushes made with the workflow token do not start other workflows, so the
+  normal push build does not run for the automatic merge. That is acceptable
+  because the check job already ran the tests and the build on the exact merged
+  tree.
+- The job summary says what happened: merged and pushed (old and new commit,
+  number of upstream commits), already up to date, blocked, or failed and why.
+  A conflict, a test or build failure, or a blocked merge fails the job, so
+  GitHub sends a notification.
 
 Scheduled workflows only run from the default branch, so the fork's default
 branch is `observer-coc`. To act on a conflict, merge or rebase locally and
