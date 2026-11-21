@@ -4,7 +4,7 @@ The observer firmware is the `SenseCap_Solar_repeater_observer` PlatformIO
 environment. The Bluetooth LE CoC log transport is the default: the
 environment sets `-D SENSECAP_OBSERVER_COC_CHANNELS=2` in its `build_flags`, so
 a plain `pio run -e SenseCap_Solar_repeater_observer` builds the CoC firmware
-(`v1.18.0-coc`). The GATT-only legacy observer (`v1.18.0-obs544`) is only built
+(`v1.18.0-coc-dev`). The GATT-only legacy observer (`v1.18.0-obs544-dev`) is only built
 if the define is removed, for example with
 `PLATFORMIO_BUILD_FLAGS=-USENSECAP_OBSERVER_COC_CHANNELS`.
 
@@ -74,6 +74,13 @@ be removed once every older device has booted this firmware once. The
 CI (`.github/workflows/observer-build.yml`) runs the tests and the release
 build on every push to `observer-coc`, uploading the files as the
 `observer-coc-release` artifact.
+
+Only a tag build reports a release version. `ver` prints
+`<version> (Build: <date>)`: for a tag it is exactly the tag and the date of
+the tagged commit (`v1.18.0-coc.2 (Build: 21 Nov 2026)`); any other build
+(local `pio run`, CI push) reports `v1.18.0-coc-dev` (CI adds `.<commit>`).
+The release script fails if the firmware does not contain the tag, or the
+commit date, as a complete string. Use tags of the form `vX.Y.Z-coc.N`.
 
 To publish, push a tag matching `v*-coc*` on the commit to release:
 

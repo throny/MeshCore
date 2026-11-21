@@ -76,12 +76,22 @@ version_of() {
   sed -n '/^#ifndef FIRMWARE_VERSION/,/^#endif/p' "$root/examples/simple_repeater/MyMesh.h" \
     | { cat; echo FIRMWARE_VERSION; } | g++ -E -P -x c++ "$@" - | tr -d '[:space:]'
 }
-[ "$(version_of)" = '"v1.18.0-obs544"' ] || fail "default version"
-[ "$(version_of -DSENSECAP_OBSERVER_COC_CHANNELS=0)" = '"v1.18.0-obs544"' ] || fail "version with 0 channels"
-[ "$(version_of -DSENSECAP_OBSERVER_COC_CHANNELS=1)" = '"v1.18.0-coc"' ] || fail "version with 1 channel"
-[ "$(version_of -DSENSECAP_OBSERVER_COC_CHANNELS=2)" = '"v1.18.0-coc"' ] || fail "version with 2 channels"
+[ "$(version_of)" = '"v1.18.0-obs544-dev"' ] || fail "default version"
+[ "$(version_of -DSENSECAP_OBSERVER_COC_CHANNELS=0)" = '"v1.18.0-obs544-dev"' ] || fail "version with 0 channels"
+[ "$(version_of -DSENSECAP_OBSERVER_COC_CHANNELS=1)" = '"v1.18.0-coc-dev"' ] || fail "version with 1 channel"
+[ "$(version_of -DSENSECAP_OBSERVER_COC_CHANNELS=2)" = '"v1.18.0-coc-dev"' ] || fail "version with 2 channels"
 [ "$(version_of '-DFIRMWARE_VERSION="custom"')" = '"custom"' ] || fail "explicit version"
+[ "$(version_of '-DFIRMWARE_VERSION="v1.18.0-coc.2"')" = '"v1.18.0-coc.2"' ] || fail "tag version"
 ok "firmware version selection"
+
+# 3b. The release script's version check matches whole strings only.
+fixture="$work/version.bin"
+printf 'x\0v1.18.0-coc.2\0v1.18.0-coc-dev\0y' > "$fixture"
+"$root/tools/observer/check_version.sh" "$fixture" "v1.18.0-coc.2" || fail "exact version rejected"
+"$root/tools/observer/check_version.sh" "$fixture" "v1.18.0-coc-dev" || fail "dev version rejected"
+if "$root/tools/observer/check_version.sh" "$fixture" "v1.18.0-coc"; then fail "prefix accepted as version"; fi
+if "$root/tools/observer/check_version.sh" "$fixture" "coc.2"; then fail "suffix accepted as version"; fi
+ok "release version check is exact"
 
 # 4. Event dispatch invariants: one Bluefruit.begin and one event callback,
 #    with the legacy handler running before the observer handler.

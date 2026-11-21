@@ -57,7 +57,9 @@ pio run -e "$env_name"
 pio run -e "$env_name" -t create_uf2
 
 build_dir="${PLATFORMIO_BUILD_DIR:-$root/.pio/build}/$env_name"
-grep -qaF "$name" "$build_dir/firmware.elf" || { echo "firmware does not carry version $name" >&2; exit 1; }
+check="$root/tools/observer/check_version.sh"
+"$check" "$build_dir/firmware.elf" "$name" || { echo "firmware version is not exactly $name" >&2; exit 1; }
+"$check" "$build_dir/firmware.elf" "$build_date" || { echo "firmware build date is not exactly $build_date" >&2; exit 1; }
 
 export PIO_VERSION="$(pio --version)"
 export PIO_PACKAGES_DIR="$packages"

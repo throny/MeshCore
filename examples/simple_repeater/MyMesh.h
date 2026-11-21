@@ -73,11 +73,13 @@ struct NeighbourInfo {
   #define FIRMWARE_BUILD_DATE   "15 Oct 2026"
 #endif
 
+// Release builds pass FIRMWARE_VERSION (the tag) and FIRMWARE_BUILD_DATE (the commit date)
+// from tools/observer/build_release.sh; anything else reports a "-dev" version.
 #ifndef FIRMWARE_VERSION
   #if defined(SENSECAP_OBSERVER_COC_CHANNELS) && SENSECAP_OBSERVER_COC_CHANNELS > 0
-    #define FIRMWARE_VERSION   "v1.18.0-coc"
+    #define FIRMWARE_VERSION   "v1.18.0-coc-dev"
   #else
-    #define FIRMWARE_VERSION   "v1.18.0-obs544"
+    #define FIRMWARE_VERSION   "v1.18.0-obs544-dev"
   #endif
 #endif
 
