@@ -1,0 +1,64 @@
+name: Observer CoC build
+
+on:
+  push:
+    branches:
+      - observer-coc
+    tags:
+      - 'v*-coc*'
+  workflow_dispatch:
+
+env:
+  PIO_ENV: SenseCap_Solar_repeater_observer
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Clone Repo
+        uses: actions/checkout@v4
+
+      - name: Setup Build Environment
+        uses: ./.github/actions/setup-build-environment
+
+      - name: Run observer unit tests
+        run: pio test -e native -f test_observer_coc -f test_observer_transport
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Clone Repo
+        uses: actions/checkout@v4
+
+      - name: Setup Build Environment
+        uses: ./.github/actions/setup-build-environment
+
+      - name: Install platform packages
+        run: pio pkg install -e "$PIO_ENV"
+
+      - name: Apply Bluefruit pre-enable hook
+        run: |
+          framework="$(pio pkg list -e "$PIO_ENV" >/dev/null; echo "${PLATFORMIO_CORE_DIR:-$HOME/.platformio}/packages/framework-arduinoadafruitnrf52")"
+          test -f "$framework/libraries/Bluefruit52Lib/src/bluefruit.cpp"
+          patch -p1 -d "$framework" < patches/bluefruit-pre-enable.patch
+
+      - name: Build firmware
+        run: |
+          pio run -e "$PIO_ENV"
+          pio run -e "$PIO_ENV" -t create_uf2
+
+      - name: Checksums
+        run: |
+          cd ".pio/build/$PIO_ENV"
+          sha256sum firmware.hex firmware.zip firmware.uf2 | tee SHA256SUMS
+
+      - name: Upload firmware
+        uses: actions/upload-artifact@v4
+        with:
+          name: observer-coc-firmware
+          path: |
+            .pio/build/${{ env.PIO_ENV }}/firmware.hex
+            .pio/build/${{ env.PIO_ENV }}/firmware.zip
+            .pio/build/${{ env.PIO_ENV }}/firmware.uf2
+            .pio/build/${{ env.PIO_ENV }}/SHA256SUMS
+          if-no-files-found: error
