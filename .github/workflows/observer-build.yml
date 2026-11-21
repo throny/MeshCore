@@ -24,6 +24,12 @@ jobs:
       - name: Run observer unit tests
         run: pio test -e native -f test_observer_transport
 
+      - name: Install platform packages
+        run: pio pkg install -e "$PIO_ENV"
+
+      - name: Run observer CoC tests
+        run: bash tools/observer/run_coc_tests.sh
+
   build:
     runs-on: ubuntu-latest
     steps:
