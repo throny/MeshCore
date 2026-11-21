@@ -1649,6 +1649,98 @@ TEST(ObserverNodePrefs, CommonCLIMigratesLegacyBinaryPrefsWithoutEnrollingObserv
   EXPECT_FLOAT_EQ(frequency, reloaded.freq);
   EXPECT_FLOAT_EQ(bandwidth, reloaded.bw);
 }
+TEST(ObserverNodePrefs, BootStartupFromReloadedEnabledPeerWaitsForEntropyThenAdvertises) {
+  Bluefruit = FakeBluefruit{}; Serial = FakeSerial{}; g_mock_millis = 0;
+  fake_gatt_calls = fake_gatt_status = fake_notifications = 0;
+  saved_enabled = false;
+
+  observer::ObserverNodePrefs persisted;
+  NodePrefs* persisted_common = &persisted;
+  ObserverPrefsStream enabled_json;
+  ASSERT_TRUE(persisted.persistEnabled(true, [&] { return persisted_common->saveSerial(enabled_json); }));
+
+  observer::ObserverNodePrefs enabled;
+  ObserverPrefsStream enabled_input(enabled_json.output());
+  ASSERT_TRUE(static_cast<NodePrefs*>(&enabled)->loadSerial(enabled_input));
+  const observer::PeerIdentity intended{1, {1, 2, 3, 4, 5, 6}};
+  ObserverPrefsStream peer_json;
+  ASSERT_TRUE(enabled.persistPeer(true, intended, [&] {
+    return static_cast<NodePrefs*>(&enabled)->saveSerial(peer_json);
+  }));
+
+  observer::ObserverNodePrefs reloaded;
+  ObserverPrefsStream peer_input(peer_json.output());
+  ASSERT_TRUE(static_cast<NodePrefs*>(&reloaded)->loadSerial(peer_input));
+  ASSERT_EQ(reloaded.observer_version_, observer::ObserverNodePrefs::kObserverVersion);
+  ASSERT_EQ(reloaded.observer_enabled, 1);
+  ASSERT_EQ(reloaded.observer_peer_present, 1);
+
+  observer::Transport transport;
+  observer::PeerIdentity peer{};
+  peer.type = reloaded.observer_peer_type;
+  memcpy(peer.address, reloaded.observer_peer_address, sizeof(peer.address));
+  transport.attachPreferences(
+      reloaded.observer_version_ == observer::ObserverNodePrefs::kObserverVersion && reloaded.observer_enabled == 1,
+      peer,
+      reloaded.observer_version_ == observer::ObserverNodePrefs::kObserverVersion && reloaded.observer_peer_present == 1);
+  transport.setPreferenceCallbacks(saveEnabled, savePeer);
+
+  ASSERT_TRUE(transport.beginFromPreferences("SenseCAP Observer"));
+  EXPECT_EQ(Bluefruit.begins, 1);
+  EXPECT_EQ(fake_gatt_calls, 5);
+  transport.service();
+  EXPECT_FALSE(observer::TransportTestAccess::allocated(transport));
+  EXPECT_FALSE(Bluefruit.Advertising.running);
+
+  Bluefruit.entropy = true;
+  g_mock_millis += 100;
+  transport.service();
+  EXPECT_TRUE(observer::TransportTestAccess::allocated(transport));
+  EXPECT_EQ(observer::TransportTestAccess::nonce(transport), 42U);
+  EXPECT_TRUE(Bluefruit.Advertising.running);
+  observer::TransportTestAccess::dispose(transport);
+}
+
+TEST(ObserverNodePrefs, BootStartupDoesNotInitializeMissingUnknownOrDisabledPreferences) {
+  auto expect_no_start = [](observer::ObserverNodePrefs& prefs) {
+    Bluefruit = FakeBluefruit{}; Serial = FakeSerial{}; g_mock_millis = 0;
+    fake_gatt_calls = fake_gatt_status = fake_notifications = 0;
+    observer::PeerIdentity peer{};
+    peer.type = prefs.observer_peer_type;
+    memcpy(peer.address, prefs.observer_peer_address, sizeof(peer.address));
+    const bool enabled = prefs.observer_version_ == observer::ObserverNodePrefs::kObserverVersion &&
+                         prefs.observer_enabled == 1;
+    const bool has_peer = prefs.observer_version_ == observer::ObserverNodePrefs::kObserverVersion &&
+                          prefs.observer_peer_present == 1;
+    observer::Transport transport;
+    transport.attachPreferences(enabled, peer, has_peer);
+    transport.setPreferenceCallbacks(saveEnabled, savePeer);
+    EXPECT_FALSE(transport.beginFromPreferences("SenseCAP Observer"));
+    transport.service();
+    EXPECT_EQ(Bluefruit.begins, 0);
+    EXPECT_EQ(fake_gatt_calls, 0);
+    EXPECT_EQ(Bluefruit.entropy_calls, 0);
+    EXPECT_FALSE(observer::TransportTestAccess::allocated(transport));
+    EXPECT_FALSE(Bluefruit.Advertising.running);
+    observer::TransportTestAccess::dispose(transport);
+  };
+
+  observer::ObserverNodePrefs missing;
+  expect_no_start(missing);
+
+  observer::ObserverNodePrefs unknown;
+  ObserverPrefsStream unknown_json(
+      "{observer_v:99,observer_en:1,observer_peer_on:1,observer_peer_type:1,"
+      "observer_peer_addr:\"010203040506\",custom:{}}");
+  ASSERT_TRUE(unknown.loadSerial(unknown_json));
+  expect_no_start(unknown);
+
+  observer::ObserverNodePrefs disabled;
+  disabled.observer_version_ = observer::ObserverNodePrefs::kObserverVersion;
+  disabled.observer_enabled = 0;
+  expect_no_start(disabled);
+}
+
 #endif
 
 int main(int argc, char** argv) {

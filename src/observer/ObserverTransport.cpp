@@ -92,6 +92,11 @@ bool Transport::begin(const char* name, bool enabled) {
   return true;
 }
 
+bool Transport::beginFromPreferences(const char* name) {
+  if (!enabled_) return false;
+  return begin(name, true);
+}
+
 bool Transport::failInitialization() {
   // Bluefruit has no safe end()/partial-GATT rollback API. Fail closed and
   // require reboot instead of registering duplicate services on another opt-in.

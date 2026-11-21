@@ -1015,6 +1015,9 @@ void MyMesh::begin(FILESYSTEM *fs) {
 #if ENV_INCLUDE_GPS == 1
   applyGpsPrefs();
 #endif
+#if defined(SENSECAP_OBSERVER_TRANSPORT)
+  if (observerEnabled()) observer::transport.beginFromPreferences("SenseCAP Observer");
+#endif
 }
 
 void MyMesh::sendFloodScoped(const TransportKey& scope, mesh::Packet* pkt, uint32_t delay_millis, uint8_t path_hash_size) {

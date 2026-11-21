@@ -36,6 +36,7 @@ class Transport {
 
   explicit Transport(bool enabled = false);
   bool begin(const char* name, bool enabled);
+  bool beginFromPreferences(const char* name);
   bool initialized() const { return initialized_; }
   void service();
   bool takeCommand(char* destination, size_t capacity);
