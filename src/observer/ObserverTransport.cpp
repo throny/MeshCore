@@ -50,6 +50,9 @@ bool Transport::begin(const char* name, bool enabled) {
   if (initialized_) return true;
   instance_ = this;
   Bluefruit.configPrphBandwidth(BANDWIDTH_MAX);
+  // Suppress normal Bluetooth indication only; bootloader LEDs are independent.
+  Bluefruit.autoConnLed(false);
+  digitalWrite(LED_BLUE, 1 - LED_STATE_ON);
   if (!Bluefruit.begin(1, 0)) return failInitialization();
   core_ready_ = true;
   Bluefruit.setTxPower(0);

@@ -128,6 +128,11 @@ bool CommonRadioPrefs::getByKey(const char*, char*, size_t) { return false; }
 #define SENSECAP_OBSERVER_TRANSPORT
 #define OBSERVER_TRANSPORT_PLATFORM_TEST
 constexpr uint16_t BLE_CONN_HANDLE_INVALID = 0xffff;
+constexpr int LED_BLUE = 7, LED_STATE_ON = 0;
+inline int fake_blue_led = LED_STATE_ON;
+inline void digitalWrite(int pin, int level) {
+  if (pin == LED_BLUE) fake_blue_led = level;
+}
 constexpr int NRF_SUCCESS = 0, BANDWIDTH_MAX = 0, CHR_PROPS_NOTIFY = 1,
     CHR_PROPS_WRITE = 2, CHR_PROPS_READ = 4, SECMODE_ENC_WITH_MITM = 3,
     SECMODE_NO_ACCESS = 0, BLE_GAP_ADV_FLAGS_LE_ONLY_GENERAL_DISC_MODE = 0,
@@ -187,6 +192,7 @@ struct BLEConnection {
   void removeBondKey() { bond = false; }
 };
 struct FakeBluefruit {
+  bool auto_led = true, auto_led_at_begin = true;
   bool core = false, begin_ok = true, entropy = false;
   int begins = 0, entropy_calls = 0, entropy_before_core = 0;
   uint64_t random = 42;
@@ -219,7 +225,8 @@ struct FakeBluefruit {
     void setDisconnectCallback(decltype(disconnect) cb) { disconnect = cb; }
   } Periph;
   void configPrphBandwidth(int) {}
-  bool begin(int, int) { ++begins; core = begin_ok; return begin_ok; }
+  void autoConnLed(bool enabled) { auto_led = enabled; }
+  bool begin(int, int) { ++begins; auto_led_at_begin = auto_led; core = begin_ok; return begin_ok; }
   void setTxPower(int) {} void setName(const char*) {}
   BLEConnection* Connection(uint16_t handle) { return handle == 1 ? &connection : nullptr; }
 } Bluefruit;
@@ -235,6 +242,40 @@ inline int sd_rand_application_vector_get(uint8_t* bytes, size_t size) {
 inline void bond_remove_key(int, ble_gap_addr_t*) {}
 inline void sd_ble_gatts_rw_authorize_reply(uint16_t, ble_gatts_rw_authorize_reply_params_t*) { ++fake_reads; }
 #include "observer/ObserverTransport.cpp"
+inline unsigned fake_ota_resets = 0;
+inline void enterOTADfu() { ++fake_ota_resets; }
+#include "observer/ObserverOta.h"
+
+TEST(ObserverAdminOta, CanonicalCommandResetsWithoutReinitializingTheObserverStack) {
+  fake_ota_resets = 0;
+  Bluefruit = FakeBluefruit{};
+  ASSERT_TRUE(Bluefruit.begin(1, 0));
+  char reply[96] = "";
+  EXPECT_TRUE(observer::handleAdminOtaCommand("start ota", reply));
+  EXPECT_EQ(fake_ota_resets, 1U);
+  EXPECT_EQ(Bluefruit.begins, 1);
+  // The hardware primitive must not return; never fabricate an OK if it does.
+  EXPECT_STREQ(reply, "ERR: OTA reset returned");
+  EXPECT_FALSE(observer::isAllowedReadCommand("start ota"));
+}
+TEST(ObserverAdminOta, InvalidSuffixCannotFallThroughToLegacyPrefixMatchedOta) {
+  fake_ota_resets = 0;
+  char reply[96] = "";
+  for (const char* command : {"start ota extra", "start otax", "start ota "}) {
+    EXPECT_TRUE(observer::handleAdminOtaCommand(command, reply));
+    EXPECT_STREQ(reply, "ERR: use start ota without arguments");
+  }
+  EXPECT_EQ(fake_ota_resets, 0U);
+}
+TEST(ObserverAdminOta, OtherCommandsAreUntouched) {
+  fake_ota_resets = 0;
+  char reply[96] = "unchanged";
+  for (const char* command : {"ver", "start", "", "observer enable", "reboot"}) {
+    EXPECT_FALSE(observer::handleAdminOtaCommand(command, reply));
+  }
+  EXPECT_EQ(fake_ota_resets, 0U);
+  EXPECT_STREQ(reply, "unchanged");
+}
 
 namespace observer {
 struct TransportTestAccess {
@@ -257,6 +298,7 @@ class ObserverProductionLifecycle : public ::testing::Test {
   observer::Transport t;
   void SetUp() override {
     Bluefruit = FakeBluefruit{}; Serial = FakeSerial{}; g_mock_millis = 0;
+    fake_blue_led = LED_STATE_ON;
     fake_gatt_calls = fake_gatt_status = fake_notifications = 0; saved_enabled = false;
     fake_notification_ok = true;
     fake_notification_attempts.clear(); fake_accepted_notifications.clear();
@@ -299,6 +341,15 @@ TEST_F(ObserverProductionLifecycle, DefaultOffNeverStartsCoreOrAllocates) {
   EXPECT_EQ(Bluefruit.begins, 0); EXPECT_EQ(Bluefruit.entropy_calls, 0);
   EXPECT_EQ(fake_gatt_calls, 0); EXPECT_EQ(Bluefruit.Advertising.starts, 0);
   EXPECT_FALSE(observer::TransportTestAccess::allocated(t));
+}
+TEST_F(ObserverProductionLifecycle, NormalBluetoothLedIsDisabledBeforeCoreStartupAndDrivenOff) {
+  ready(true);
+  EXPECT_FALSE(Bluefruit.auto_led_at_begin);
+  EXPECT_FALSE(Bluefruit.auto_led);
+  EXPECT_EQ(fake_blue_led, 1 - LED_STATE_ON);
+  connect(); disconnect();
+  EXPECT_FALSE(Bluefruit.auto_led);
+  EXPECT_EQ(fake_blue_led, 1 - LED_STATE_ON);
 }
 TEST_F(ObserverProductionLifecycle, CoreBeforeEntropyAndDelayedReadinessDoesNotUndoOptin) {
   t.attachPreferences(false, observer::PeerIdentity{}, true);

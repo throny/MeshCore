@@ -3,6 +3,7 @@
 
 #if defined(SENSECAP_OBSERVER_TRANSPORT)
   #include <observer/ObserverCommand.h>
+  #include <observer/ObserverOta.h>
   #include <observer/ObserverTransport.h>
   #define OBSERVER_LOG_OUTPUT observer::logOutput()
 #else
@@ -1305,7 +1306,13 @@ void MyMesh::handleCommand(uint32_t sender_timestamp, char *command, char *reply
       sendNodeDiscoverReq();
       strcpy(reply, "OK - Discover sent");
     }
-  } else{
+  }
+#if defined(SENSECAP_OBSERVER_TRANSPORT)
+  else if (observer::handleAdminOtaCommand(command, reply)) {
+    // Existing admin/USB CLI only. The observer allowlist never reaches here.
+  }
+#endif
+  else {
     _cli.handleCommand(sender_timestamp, command, reply);  // common CLI commands
   }
 }
